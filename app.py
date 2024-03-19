@@ -9,7 +9,6 @@ import numpy as np
 import cv2
 import pandas
 import sys
-import pdb
 
 from utils import *
 
@@ -104,7 +103,6 @@ if __name__ == "__main__":
 
 	with col3:
 		st.title('Original & Reconstructed')
-
 
 		option = st.selectbox('Image:',
 		    ('Galaxies', 'Pleiades', 'Black Hole', 'Point', 'Upload', 'Capture'))
