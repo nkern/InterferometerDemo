@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
 		if option not in ['Upload', 'Capture']:
 			st.scatter_chart(pandas.DataFrame(ants.T, columns=['X', 'Y']), x='X', y='Y',
-							 height=400, width=400, use_container_width=False, size=30, color='#000000')
+							 height=400, width=400, use_container_width=False, size=30, color='#D22B2B')
 
 	with col2:
 		st.title("UV Sampling")
