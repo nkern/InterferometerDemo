@@ -34,11 +34,11 @@ class UVSample:
 		self.ants = ants
 		uvs = (ants[:, None, :] - ants[:, :, None]).reshape(2, -1)
 
-		# only keep u >= 0 values
+		# only keep the u > 0 half: (-u, -v) is the conjugate of (u, v) for a real sky
 		uvs = uvs[:, uvs[0] > 0]
 
-		# normalize uvs to this aspect ratio
-		# TODO: if using vertical aspect ratio, this should be uvs * self.Nu // 2
+		# scale uvs so u and v share units (1 unit = 1 / Nv cycles per image pixel);
+		# keeping them isotropic here makes the rotation below a true rotation
 		self.uvs = uvs * (self.Nv // 2)
 
 		if rotate is not None and rotate >= 5.0:
@@ -47,13 +47,18 @@ class UVSample:
 			for rot in rotations:
 				_uvs.append(rotation_mat(rot * np.pi / 180) @ self.uvs)
 			uvs = np.concatenate(_uvs, axis=-1)
-			self.uvs = uvs[:, uvs[0] > 0]
+			# baselines rotated past u = 0 are kept as their conjugate (-u, -v), since
+			# the conjugate baseline was already dropped before rotation
+			self.uvs = uvs * np.where(uvs[0] < 0, -1, 1)
 
 		# construct mask
 		self.mask = np.zeros((self.Nv, self.Nu//2+1, 1), dtype=np.float32)
 
-		x_idx = np.digitize(self.uvs[0], np.arange(self.Nu//2)+.5, right=False)
-		y_idx = np.digitize(self.uvs[1] + self.Nv//2, np.arange(self.Nv-1)+.5, right=False)
+		# u is sampled across Nu image columns but v across Nv rows, so convert u to
+		# grid cells (u * Nu / Nv, i.e. baseline * Nu // 2) to keep l and m pixels the same size
+		x_idx = np.digitize(self.uvs[0] * self.Nu / self.Nv, np.arange(self.Nu//2)+.5, right=False)
+		# image rows count downward, so map -v to rows to keep +v (and +m) pointing up
+		y_idx = np.digitize(-self.uvs[1] + self.Nv//2, np.arange(self.Nv-1)+.5, right=False)
 
 		self.mask[y_idx, x_idx] = 1.0
 
@@ -66,6 +71,12 @@ class UVSample:
 		# image will have max values > 255 and needs re-normalization
 		self.mask *= (self.mask.size / self.mask.sum())
 
+
+	def psf(self):
+		# PSF is the inverse FFT of the uv sampling mask: centered and peak-normalized
+		psf = np.fft.irfft2(np.fft.ifftshift(self.mask[..., 0], axes=(0,)), s=self.shape)
+		psf = np.fft.fftshift(psf)
+		return psf / psf.max()
 
 	def rfft(self, im):
 		return np.fft.fftshift(np.fft.rfft2(im, axes=(0, 1)), axes=(0,))
@@ -116,4 +127,21 @@ def make_hex(N, D=.1):
     x = np.array(x) - np.mean(x)
     y = np.array(y) - np.mean(y)
     return np.vstack([x, y]) * D
+
+
+def make_spiral(N, Narms=4, spacing=.035, b=.05):
+    """
+    N antennas per arm on Narms Archimedean spiral arms (r = b * theta),
+    placed at a fixed arc-length spacing, so increasing N extends each arm
+    without moving the inner antennas.
+    """
+    # invert the arc length of r = b * theta to find each antenna's theta
+    theta = np.linspace(0, 4*np.pi, 4001)
+    arc = b / 2 * (theta * np.sqrt(1 + theta**2) + np.arcsinh(theta))
+    theta_ants = np.interp(spacing * np.arange(1, N + 1), arc, theta)
+    ants = []
+    for k in range(Narms):
+        phi = theta_ants + 2 * np.pi * k / Narms
+        ants.append(np.vstack([b * theta_ants * np.cos(phi), b * theta_ants * np.sin(phi)]))
+    return np.concatenate(ants, axis=1)
 

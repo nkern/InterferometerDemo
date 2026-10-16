@@ -3,7 +3,12 @@ Interferometry demo.
 
 Video capture only works locally.
 """
+import os
+# pyarrow's default mimalloc pool can segfault on streamlit reruns, use the system allocator
+os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
+
 import streamlit as st
+import altair as alt
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
@@ -26,18 +31,18 @@ if __name__ == "__main__":
 		with c1:
 			# load antennas
 			option = st.selectbox('Array type:',
-			    ('Uniform', 'Gaussian', 'Hexagon', 'Grid', 'Upload', 'Capture'))
+			    ('Uniform', 'Gaussian', 'Hexagon', 'Grid', 'Spiral', 'Upload', 'Capture'))
 		with c2:
 			seed = st.number_input("Random Seed:", value=0, min_value=0)
 			np.random.seed(seed)
 		with c3:
-			Nant = st.number_input("Number of Antennas:", min_value=2, max_value=500, value=50)
+			Nant = st.number_input("Number of Antennas:", min_value=2, max_value=500, value=10)
 
 		if option == 'Uniform':
-			ants = np.vstack([np.random.rand(500)*4/3/2, np.random.rand(500)/2])
+			ants = np.vstack([np.random.rand(500)/2, np.random.rand(500)/2])
 			ants = ants[:, :Nant]
 		elif option == 'Gaussian':
-			ants = np.vstack([np.random.randn(500)/6*4/3, np.random.randn(500)/6])
+			ants = np.vstack([np.random.randn(500)/6, np.random.randn(500)/6])
 			ants = ants[:, :Nant]
 		elif option == 'Grid':
 			Nant = min([Nant, 25])
@@ -45,6 +50,10 @@ if __name__ == "__main__":
 		elif option == 'Hexagon':
 			Nants = min([Nant, 15])
 			ants = make_hex(Nants, D=.3 / Nants)
+		elif option == 'Spiral':
+			# Nant is the number of antennas along each of the 4 arms
+			Nant = min([Nant, 30])
+			ants = make_spiral(Nant)
 		elif option in ['Upload', 'Capture']:
 			if option == 'Upload':
 				uploaded_file = st.file_uploader('Upload a white-background image:')
@@ -76,9 +85,9 @@ if __name__ == "__main__":
 			st.image(255-thresh, clamp=True, width=400)
 			st.write("Nantenna: {}".format(ants.shape[1]))
 
-		if option not in ['Upload', 'Capture']:
-			st.scatter_chart(pandas.DataFrame(ants.T, columns=['X', 'Y']), x='X', y='Y',
-							 height=400, width=400, use_container_width=False, size=30, color='#D22B2B')
+		# plot array layout (below the segmented image for Upload / Capture)
+		st.scatter_chart(pandas.DataFrame(ants.T, columns=['X', 'Y']), x='X', y='Y',
+						 height=400, width=400, use_container_width=False, size=30, color='#D22B2B')
 
 	with col2:
 		st.title("UV Sampling")
@@ -99,6 +108,30 @@ if __name__ == "__main__":
 			uvs = uvs[:, ::uvs.shape[1]//10000]
 		st.scatter_chart(pandas.DataFrame(uvs.T, columns=['U', 'V']), x='U', y='V',
 						 height=600, width=300, use_container_width=False, size=15)
+
+		# plot peak-normalized PSF in dB, cropped to a centered square
+		# (each pixel is an svg rect, so the crop size sets how smooth zooming is)
+		h = 48  # half-width of the square crop in pixels (max UV.Nv // 2)
+		psf = UV.psf()[UV.Nv//2 - h:UV.Nv//2 + h, UV.Nu//2 - h:UV.Nu//2 + h]
+		# image-plane coordinates: l to the right, m up (rows count downward)
+		m, l = np.meshgrid(h - np.arange(2*h), np.arange(2*h) - h, indexing='ij')
+		psf_df = pandas.DataFrame({'l': l.ravel(), 'm': m.ravel(),
+								   'dB': 10 * np.log10(np.abs(psf).clip(1e-12)).ravel()})
+		psf_vmin = st.number_input("PSF Colorbar Min (dB):", min_value=-100, max_value=-1, value=-30, step=5)
+		# draw each pixel as a unit rect so it scales correctly when zooming
+		psf_chart = alt.Chart(psf_df, title='PSF (peak-normalized)').mark_rect(clip=True).transform_calculate(
+			l0='datum.l - 0.5', l1='datum.l + 0.5', m0='datum.m - 0.5', m1='datum.m + 0.5'
+		).encode(
+			x=alt.X('l0:Q', title='l [pixels]', scale=alt.Scale(domain=[-h - .5, h - .5], nice=False, padding=0)),
+			x2='l1:Q',
+			y=alt.Y('m0:Q', title='m [pixels]', scale=alt.Scale(domain=[-h + .5, h + .5], nice=False, padding=0)),
+			y2='m1:Q',
+			color=alt.Color('dB:Q', title='dB', scale=alt.Scale(scheme='inferno', domain=[psf_vmin, 0], clamp=True),
+							legend=alt.Legend(orient='bottom', gradientLength=250)),
+			tooltip=['l:Q', 'm:Q', alt.Tooltip('dB:Q', format='.1f')],
+		# autosize 'pad' makes width / height set the plot area itself, keeping it square
+		).properties(width=250, height=250, autosize='pad').interactive()
+		st.altair_chart(psf_chart, use_container_width=False)
 
 
 	with col3:
